@@ -23,14 +23,11 @@ runs:
         
         echo "📦 Downloading release assets to compute checksums locally on runner..."
         mkdir -p /tmp/proofcore_assets
-        # Скачиваем файлы релиза во временную папку раннера GitHub
         gh release download "$TAG" --repo "$REPO" --dir /tmp/proofcore_assets || true
         
-        # Считаем SHA-256 каждого бинарника
         CHECKSUMS=$(cd /tmp/proofcore_assets && sha256sum * 2>/dev/null || echo "No binary assets uploaded")
         rm -rf /tmp/proofcore_assets
         
-        # Формируем легкий текстовый манифест (2 КБ)
         MANIFEST="Repository: $REPO
         Release Tag: $TAG
         Target Commit: $COMMIT_SHA
@@ -41,8 +38,24 @@ runs:
         Release Notes:
         $BODY"
         
+        echo "🔑 Requesting OIDC Identity Token from GitHub..."
+        OIDC_TOKEN=$(curl -sLS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+          -H "Accept: application/json; api-version=2.0" \
+          "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api.proofcore.org" | jq -r '.value')
+        
+        if [ "$OIDC_TOKEN" == "null" ] || [ -z "$OIDC_TOKEN" ]; then
+          echo "⚠️ Failed to fetch OIDC token. Did you add 'id-token: write' to permissions?"
+        else
+          echo "✅ OIDC Token retrieved!"
+        fi
+        
         echo "🚀 Sealing Manifest via ProofCore API..."
-        PAYLOAD=$(jq -n --arg content "$MANIFEST" --arg agent "github-release-notary" --arg title "Release $TAG ($REPO)" '{content: $content, agent_id: $agent, title: $title}')
+        PAYLOAD=$(jq -n \
+          --arg content "$MANIFEST" \
+          --arg agent "github-release-notary" \
+          --arg title "Release $TAG ($REPO)" \
+          --arg oidc "$OIDC_TOKEN" \
+          '{content: $content, agent_id: $agent, title: $title, github_oidc_token: $oidc}')
         
         RESPONSE=$(curl -s -X POST https://api.proofcore.org/api/v0.1/seal -H "Content-Type: application/json" -d "$PAYLOAD")
         BADGE=$(echo "$RESPONSE" | jq -r .badge_markdown)
