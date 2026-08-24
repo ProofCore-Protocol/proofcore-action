@@ -75,12 +75,16 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write  # Required to update the release notes with the badge
+      id-token: write  # REQUIRED: Generates OIDC token to cryptographically prove repository identity
     steps:
       - name: 🛡️ Cryptographically Notarize Release on TON
         uses: ProofCore-Protocol/proofcore-action@v1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 ```
+
+**Why `id-token: write` is required?**  
+ProofCore uses OpenID Connect (OIDC) to establish a Zero-Trust identity. Instead of relying on API keys, the Action securely requests a short-lived cryptographic token from GitHub and passes it to the ProofCore API. This proves mathematically that the notarization request genuinely originated from your repository's CI/CD pipeline, protecting your releases against spoofing.
 
 ---
 
