@@ -1,0 +1,50 @@
+name: 'ProofCore Release Notary'
+description: 'Cryptographically seals GitHub Releases on the TON Blockchain and appends an immutable verification badge.'
+branding:
+  icon: 'shield'
+  color: 'green'
+inputs:
+  github_token:
+    description: 'GITHUB_TOKEN to read and update the release.'
+    required: true
+runs:
+  using: "composite"
+  steps:
+    - name: Seal Release and Append Badge
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+        REPO: ${{ github.repository }}
+        TAG: ${{ github.ref_name }}
+      run: |
+        echo "🛡️ Fetching release notes for $TAG..."
+        # Extract existing release body using GitHub CLI
+        BODY=$(gh release view "$TAG" --repo "$REPO" --json body -q .body)
+        
+        echo "🚀 Sealing content via ProofCore Zero-Auth API..."
+        # Safely construct JSON payload
+        PAYLOAD=$(jq -n --arg content "$BODY" --arg agent "github-action" --arg title "Release $TAG ($REPO)" '{content: $content, agent_id: $agent, title: $title}')
+        
+        # Call ProofCore API
+        RESPONSE=$(curl -s -X POST https://api.proofcore.org/api/v0.1/seal -H "Content-Type: application/json" -d "$PAYLOAD")
+        
+        # Extract badge markdown
+        BADGE=$(echo "$RESPONSE" | jq -r .badge_markdown)
+        
+        if [ "$BADGE" == "null" ] || [ -z "$BADGE" ]; then
+          echo "❌ Failed to seal the release. Response: $RESPONSE"
+          exit 1
+        fi
+        
+        echo "✅ Successfully anchored! Deal ID: $(echo "$RESPONSE" | jq -r .deal_id)"
+        
+        # Create new release body
+        NEW_BODY="$BODY
+
+        ---
+        $BADGE"
+        
+        echo "📝 Updating GitHub Release with Verification Badge..."
+        # Update the release via GitHub CLI
+        gh release edit "$TAG" --repo "$REPO" --notes "$NEW_BODY"
+        echo "🎉 Done!"
