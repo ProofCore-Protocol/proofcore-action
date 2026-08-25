@@ -17,18 +17,18 @@ runs:
         REPO: ${{ github.repository }}
         TAG: ${{ github.ref_name }}
       run: |
-        echo "🛡️ [1/5] Extracting Git metadata for $TAG in $REPO..."
-        BODY=$(gh release view "$TAG" --repo "$REPO" --json body -q .body)
+        echo "🛡️ [1/4] Extracting Release metadata for $TAG..."
+        RAW_BODY=$(gh release view "$TAG" --repo "$REPO" --json body -q .body)
         COMMIT_SHA=$(gh release view "$TAG" --repo "$REPO" --json targetCommitish -q .targetCommitish)
-        echo "   Commit SHA: $COMMIT_SHA"
         
-        echo "📦 [2/5] Downloading release assets to compute checksums locally..."
+        # Очищаем старые бейджи ProofCore из текста релиза (на случай повторного запуска)
+        CLEAN_BODY=$(echo "$RAW_BODY" | sed -E 's/---\s*\[!\[ProofCore\].*//g' | sed -E 's/\[!\[ProofCore\].*//g' | sed -E 's/---\s*<a href="https:\/\/proofcore\.org.*<\/a>//g' | sed -E 's/<a href="https:\/\/proofcore\.org.*<\/a>//g' | sed -e :a -e '/^\n*$/{$d;N;};/\n$/ba')
+
+        echo "📦 [2/4] Computing binary checksums locally..."
         mkdir -p /tmp/proofcore_assets
         gh release download "$TAG" --repo "$REPO" --dir /tmp/proofcore_assets || true
         
         CHECKSUMS=$(cd /tmp/proofcore_assets && sha256sum * 2>/dev/null || echo "No binary assets uploaded")
-        echo "   Computed Checksums:"
-        echo "$CHECKSUMS"
         rm -rf /tmp/proofcore_assets
         
         MANIFEST="Repository: $REPO
@@ -39,28 +39,17 @@ runs:
         $CHECKSUMS
 
         Release Notes:
-        $BODY"
+        $CLEAN_BODY"
         
-        echo "🔑 [3/5] Requesting OIDC Identity Token from GitHub..."
-        if [ -z "$ACTIONS_ID_TOKEN_REQUEST_URL" ]; then
-          echo "❌ [ERROR] ACTIONS_ID_TOKEN_REQUEST_URL is empty! Make sure 'permissions: id-token: write' is set in your workflow."
-          OIDC_TOKEN=""
-        else
-          echo "   Request URL: $ACTIONS_ID_TOKEN_REQUEST_URL"
+        echo "🔑 [3/4] Requesting GitHub OIDC Token..."
+        OIDC_TOKEN=""
+        if [ -n "$ACTIONS_ID_TOKEN_REQUEST_URL" ]; then
           OIDC_RESPONSE=$(curl -sLS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             -H "Accept: application/json; api-version=2.0" \
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api.proofcore.org")
-          
           OIDC_TOKEN=$(echo "$OIDC_RESPONSE" | jq -r '.value // empty')
-          
-          if [ -z "$OIDC_TOKEN" ]; then
-            echo "⚠️ [WARN] OIDC Token could not be parsed. GitHub Response: $OIDC_RESPONSE"
-          else
-            echo "✅ [SUCCESS] OIDC Token retrieved successfully! (Length: ${#OIDC_TOKEN} chars)"
-          fi
         fi
-        
-        echo "🚀 [4/5] Sending Manifest to ProofCore API..."
+
         PAYLOAD=$(jq -n \
           --arg content "$MANIFEST" \
           --arg agent "github-release-notary" \
@@ -68,23 +57,23 @@ runs:
           --arg oidc "$OIDC_TOKEN" \
           '{content: $content, agent_id: $agent, title: $title, github_oidc_token: $oidc}')
         
+        echo "🚀 [4/4] Anchoring Release to ProofCore Protocol..."
         RESPONSE=$(curl -s -X POST https://api.proofcore.org/api/v0.1/seal \
           -H "Content-Type: application/json" \
           -d "$PAYLOAD")
         
-        echo "   Server Response: $RESPONSE"
-        BADGE=$(echo "$RESPONSE" | jq -r .badge_markdown)
+        # Берем HTML-бейдж с target="_blank" (с фоллбэком на markdown)
+        BADGE=$(echo "$RESPONSE" | jq -r '.badge_html // .badge_markdown // empty')
         
-        if [ "$BADGE" == "null" ] || [ -z "$BADGE" ]; then
-          echo "❌ [ERROR] Failed to seal release. Invalid response from ProofCore API."
+        if [ -z "$BADGE" ]; then
+          echo "❌ Failed to seal release. Server response: $RESPONSE"
           exit 1
         fi
         
-        NEW_BODY="$BODY
+        NEW_BODY="$CLEAN_BODY
 
         ---
         $BADGE"
         
-        echo "📝 [5/5] Updating GitHub Release with Verification Badge..."
         gh release edit "$TAG" --repo "$REPO" --notes "$NEW_BODY"
-        echo "🎉 Done! Manifest permanently anchored on TON."
+        echo "🎉 Success! Release permanently anchored on TON Blockchain."
